@@ -1,0 +1,139 @@
+#!/bin/bash
+# execute it on PC
+# desirably, before first boot
+
+progname=`basename $0`
+usage="$progname [-hvn] [-p pattern]
+  -v
+    verbosely echoing
+  -n
+    dry-run with verbose
+  -p pattern
+    default: pattern='*/*/*'
+    example: $progname -p platform/*/msm_sdcc.1
+"
+
+patterns=()
+verbose=false
+dryrun=false
+while true; do
+  case "$1" in
+  -p) patterns+=("$2"); shift 2;;
+  -h) echo "$usage"; exit 0;;
+  -v) verbose=true; shift;;
+  -n) dryrun=true; verbose=true; shift;;
+  -*) shift;;
+  *) break;;
+  esac
+done
+test ${#patterns[@]} -eq 0 && patterns=('*/*' '*/*/*')
+
+excludelist="`dirname $0`/dodump.exclude"
+
+adbx() {
+  #adb "$@" | sed -b 's/\r\r$//;s/\r$//'
+  adb "$@" | sed -b 's/\r\r$//'
+  #{ for i in "$@"; do echo -n "($i)"; done; echo;} >&2
+}
+
+adb_echo_result() {
+  adbx shell $sucmd "$@" ">/dev/null" "2>/dev/null" ";" "echo" "\$?"
+}
+
+adb_return_result() {
+  rc="`adb_echo_result \"\$@\"`"
+  return $rc
+}
+
+adb_not_exist_cmd() {
+  rc="`adb_echo_result \"\$@\"`"
+  test "$rc" = "127"
+}
+
+globmatch() {
+  case "$1" in
+  $2) true;;
+  *) false;;
+  esac
+}
+
+if adb_not_exist_cmd id; then
+  echo "$0: Unable to dump: No id command: I gave up.">&2
+  exit 2
+elif globmatch "`adbx shell id`" 'uid=0\(*'; then
+  sucmd=''
+elif adb_not_exist_cmd su -c echo; then
+  echo "$0: Unable to dump: There are neither rooted adbx nor su command.">&2
+  exit 2
+else
+  sucmd='su -c'
+fi
+
+test -f "$excludelist" && {
+  exclude=`sed 's/^#.*$//;s/[:space:][:space:]*#.*$//;/^$/d' "$excludelist"`
+} || exclude=''
+
+partls=
+for pattern in ${patterns[@]}; do
+  namedir="/dev/block/$pattern/by-name"
+  namels=`adbx shell $sucmd echo "$namedir"`
+  namels_len=`echo "$namels" | wc -w`
+  $verbose && echo "partitions (by name) list: $namels"
+  if [ $namels_len -eq 1 ] && adb_return_result test -d "$namels"; then
+    partls="$namels"
+    break
+  fi
+done
+if [ -z "$partls" ]; then
+  if [ $namels_len -eq 1 ]; then
+    echo "The partition-name directory is not found.">&2
+  else
+    echo "The partition-name directory is anbiguous as follows.">&2
+    echo "  $namels">&2
+    echo "use -p option.">&2
+    exit 2
+  fi
+  
+  for pattern in ${patterns[@]}; do
+  numdir="/dev/block/$pattern/by-num"
+  numls=`adbx shell $sucmd echo "$numdir"`
+  numls_len=`echo "$numls" | wc -w`
+  $verbose && echo "partitions (by number) list: $numls"
+  if [ $numls_len -eq 1 ] && adb_return_result test -d "$numls"; then
+    partls="$numls"
+    break
+  fi
+  done
+  if [ -z "$partls" ]; then
+    if [ $numls_len -eq 1 ]; then
+      echo "The partition-num directory is not found.">&2
+    else
+      echo "The partition-num directory is anbiguous as following.">&2
+      echo "  $numls">&2
+      echo "use -p option.">&2
+    fi
+  fi
+fi
+
+if [ -n "$partls" ]; then
+  parts=`adbx shell $sucmd ls "$partls"`
+  parts_len=`echo "$parts" | wc -w`
+  $verbose && echo "partitions: $parts"
+  ipart=0
+  for part in $parts; do
+    ipart=`expr $ipart + 1`
+    echo -n "($ipart/$parts_len)$part:"
+    for ex in $exclude; do
+      if [ "$part" = "$ex" ]; then
+        echo excluded.
+        continue 2
+      fi
+    done
+    echo
+    $verbose && echo "adbx shell $sucmd \"cat $partls/$part\" >\"$part.img\""
+    $dryrun || adbx shell $sucmd "cat $partls/$part" >"$part.img"
+  done
+  exit 0
+else
+  exit 2
+fi
