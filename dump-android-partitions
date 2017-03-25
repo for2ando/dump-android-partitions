@@ -1,24 +1,40 @@
 #!/bin/bash
 # execute it on PC
 # desirably, before first boot
+#set -x
+verbose=false
+dryrun=false
+excludefile='dump.exclude'
+DEFAULT_PATHES=(
+  '/dev/block/*/*/by-name'
+  '/dev/block/*/*/*/by-name'
+  '/dev/block/*/*/by-num'
+  '/dev/block/*/*/*/by-num'
+)
 
 progname=`basename $0`
-usage="$progname [-hvn] [-p pattern]
+usage="$progname [-hvn] [-p glob] [-x exclude]
+  -h
+    print this message and exit
   -v
     verbosely echoing
   -n
     dry-run with verbose
-  -p pattern
-    default: pattern='*/*/*'
-    example: $progname -p platform/*/msm_sdcc.1
+  -p glob
+    A shell glob pattern to search directories that includes partition names as file(node) names.
+    example: $progname -p /dev/block/platform/*/msm_sdcc.1/by-name
+    To use multiple globs, you can repeat -p options.
+    default globs: ${DEFAULT_PATHES[@]}
+  -x exclude
+    A file includes partition names to be excluded from dumping
+    default: $excludefile
 "
 
-patterns=()
-verbose=false
-dryrun=false
+globs=()
 while true; do
   case "$1" in
-  -p) patterns+=("$2"); shift 2;;
+  -p) globs+=("$2"); shift 2;;
+  -x) excludefile="$2"; shift 2;;
   -h) echo "$usage"; exit 0;;
   -v) verbose=true; shift;;
   -n) dryrun=true; verbose=true; shift;;
@@ -26,14 +42,10 @@ while true; do
   *) break;;
   esac
 done
-test ${#patterns[@]} -eq 0 && patterns=('*/*' '*/*/*')
-
-excludelist="`dirname $0`/dodump.exclude"
+test ${#globs[@]} -eq 0 && globs=${DEFAULT_PATHES[@]}
 
 adbx() {
-  #adb "$@" | sed -b 's/\r\r$//;s/\r$//'
-  adb "$@" | sed -b 's/\r\r$//'
-  #{ for i in "$@"; do echo -n "($i)"; done; echo;} >&2
+  adb "$@" | sed -b 's/\r$//'
 }
 
 adb_echo_result() {
@@ -45,7 +57,7 @@ adb_return_result() {
   return $rc
 }
 
-adb_not_exist_cmd() {
+remote_cmd_not_exist() {
   rc="`adb_echo_result \"\$@\"`"
   test "$rc" = "127"
 }
@@ -57,83 +69,75 @@ globmatch() {
   esac
 }
 
-if adb_not_exist_cmd id; then
+remote_adb_is_rooted() {
+  globmatch "`adbx shell id`" 'uid=0\(*'
+}
+
+remote_su_not_exist() {
+  remote_cmd_not_exist su -c echo
+}
+
+get_partitions_list_dir() {
+  declare -n partListGlobs=$1
+  partListDir=
+  for glob in ${partListGlobs[@]}; do
+    partListDirs=`adbx shell $sucmd echo "$glob"`
+    partListDirs_len=`echo "$partListDirs" | wc -w`
+    $verbose && echo "partitions (by name) list: $partListDirs">&2
+    if [ $partListDirs_len -eq 1 ] && adb_return_result test -d "$partListDirs"; then
+      partListDir="$partListDirs"
+      break
+    fi
+  done
+  if [ -z "$partListDir" ]; then
+    if [ $partListDirs_len -eq 1 ]; then
+      echo "There are no partitions list directory for: ${partListGlobs[@]}">&2
+    else
+      echo "There are multiple partitions list directories for ${partListGlobs[@]} are found as follows:">&2
+      echo "  $partListDirs">&2
+      echo "You can use -p option to specify single partitions list directory.">&2
+    fi
+    return 2
+  fi
+  echo "$partListDir"
+}
+
+if remote_cmd_not_exist id; then
   echo "$0: Unable to dump: No id command: I gave up.">&2
   exit 2
-elif globmatch "`adbx shell id`" 'uid=0\(*'; then
+fi
+if remote_adb_is_rooted; then
   sucmd=''
-elif adb_not_exist_cmd su -c echo; then
+elif remote_su_not_exist; then
   echo "$0: Unable to dump: There are neither rooted adbx nor su command.">&2
   exit 2
 else
   sucmd='su -c'
 fi
 
-test -f "$excludelist" && {
-  exclude=`sed 's/^#.*$//;s/[:space:][:space:]*#.*$//;/^$/d' "$excludelist"`
+test -f "$excludefile" && {
+  exclude=`sed 's/^#.*$//;s/[:space:][:space:]*#.*$//;/^$/d' "$excludefile"`
 } || exclude=''
 
-partls=
-for pattern in ${patterns[@]}; do
-  namedir="/dev/block/$pattern/by-name"
-  namels=`adbx shell $sucmd echo "$namedir"`
-  namels_len=`echo "$namels" | wc -w`
-  $verbose && echo "partitions (by name) list: $namels"
-  if [ $namels_len -eq 1 ] && adb_return_result test -d "$namels"; then
-    partls="$namels"
-    break
-  fi
-done
-if [ -z "$partls" ]; then
-  if [ $namels_len -eq 1 ]; then
-    echo "The partition-name directory is not found.">&2
-  else
-    echo "The partition-name directory is anbiguous as follows.">&2
-    echo "  $namels">&2
-    echo "use -p option.">&2
-    exit 2
-  fi
-  
-  for pattern in ${patterns[@]}; do
-  numdir="/dev/block/$pattern/by-num"
-  numls=`adbx shell $sucmd echo "$numdir"`
-  numls_len=`echo "$numls" | wc -w`
-  $verbose && echo "partitions (by number) list: $numls"
-  if [ $numls_len -eq 1 ] && adb_return_result test -d "$numls"; then
-    partls="$numls"
-    break
-  fi
-  done
-  if [ -z "$partls" ]; then
-    if [ $numls_len -eq 1 ]; then
-      echo "The partition-num directory is not found.">&2
-    else
-      echo "The partition-num directory is anbiguous as following.">&2
-      echo "  $numls">&2
-      echo "use -p option.">&2
-    fi
-  fi
-fi
 
-if [ -n "$partls" ]; then
-  parts=`adbx shell $sucmd ls "$partls"`
-  parts_len=`echo "$parts" | wc -w`
-  $verbose && echo "partitions: $parts"
-  ipart=0
-  for part in $parts; do
-    ipart=`expr $ipart + 1`
-    echo -n "($ipart/$parts_len)$part:"
-    for ex in $exclude; do
-      if [ "$part" = "$ex" ]; then
-        echo excluded.
-        continue 2
-      fi
-    done
-    echo
-    $verbose && echo "adbx shell $sucmd \"cat $partls/$part\" >\"$part.img\""
-    $dryrun || adbx shell $sucmd "cat $partls/$part" >"$part.img"
+partListDir=`get_partitions_list_dir globs`
+if [ $? -ne 0 ]; then exit 2; fi
+
+parts=`adbx shell $sucmd ls "$partListDir"`
+parts_len=`echo "$parts" | wc -w`
+$verbose && echo "partitions: $parts"
+ipart=0
+for part in $parts; do
+  ipart=`expr $ipart + 1`
+  echo -n "($ipart/$parts_len)$part:"
+  for ex in $exclude; do
+    if [ "$part" = "$ex" ]; then
+      echo excluded.
+      continue 2
+    fi
   done
-  exit 0
-else
-  exit 2
-fi
+  echo
+  $verbose && echo "adbx shell $sucmd \"cat $partListDir/$part\" >\"$part.img\""
+  $dryrun || adbx shell $sucmd "cat $partListDir/$part" >"$part.img"
+done
+exit 0
