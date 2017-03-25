@@ -44,6 +44,13 @@ while true; do
 done
 test ${#globs[@]} -eq 0 && globs=${DEFAULT_PATHES[@]}
 
+## functions
+##
+
+number_of_remote_devices() {
+  adb devices | grep -v -e '^List of devices attached$' -e '^$' | wc -l
+}
+
 adbx() {
   adb "$@" | sed -b 's/\r$//'
 }
@@ -101,6 +108,15 @@ get_partitions_list_dir() {
   fi
   echo "$partListDir"
 }
+
+## main
+##
+
+nrdev=`number_of_remote_devices`
+if [ $nrdev -eq 0 ]; then
+  echo "$0: No remote adb devices.">&2
+  exit 2
+fi
 
 if remote_cmd_not_exist id; then
   echo "$0: Unable to dump: No id command: I gave up.">&2
