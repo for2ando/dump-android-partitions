@@ -20,14 +20,16 @@ usage="$progname [-hvn] [-p glob] [-x exclude]
     verbosely echoing
   -n
     dry-run with verbose
-  -p glob
+  -p GLOB
     A shell glob pattern to search directories that includes partition names as file(node) names.
     example: $progname -p /dev/block/platform/*/msm_sdcc.1/by-name
     To use multiple globs, you can repeat -p options.
     default globs: ${DEFAULT_PATHES[@]}
-  -x exclude
+  -x EXCLUDE
     A file includes partition names to be excluded from dumping
     default: $excludefile
+  -s SERIAL
+    use device with given serial number (overrides \$ANDROID_SERIAL), same as adb command.
 "
 
 globs=()
@@ -35,6 +37,7 @@ while true; do
   case "$1" in
   -p) globs+=("$2"); shift 2;;
   -x) excludefile="$2"; shift 2;;
+  -s) serial="$2"; shift 2;;
   -h) echo "$usage"; exit 0;;
   -v) verbose=true; shift;;
   -n) dryrun=true; verbose=true; shift;;
@@ -47,12 +50,16 @@ test ${#globs[@]} -eq 0 && globs=${DEFAULT_PATHES[@]}
 ## functions
 ##
 
+_adb() {
+  adb ${serial:+-s $serial} "$@"
+}
+
 number_of_remote_devices() {
-  adb devices | grep -v -e '^List of devices attached$' -e '^$' | wc -l
+  adb devices | grep -v -e '^List of devices attached$' -e '^$' | grep "^$serial	" | wc -l
 }
 
 adbx() {
-  adb "$@" | sed -b 's/\r$//'
+  _adb "$@" | sed -b 's/\r$//'
 }
 
 adb_echo_result() {
@@ -115,6 +122,9 @@ get_partitions_list_dir() {
 nrdev=`number_of_remote_devices`
 if [ $nrdev -eq 0 ]; then
   echo "$0: No remote adb devices.">&2
+  exit 2
+elif [ $nrdev -ge 2 ]; then
+  echo "$0: Two or more remote adb devices exist. Please use $ANDROID_SERIAL envvar, or -s option.">&2
   exit 2
 fi
 
