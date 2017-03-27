@@ -4,6 +4,7 @@
 #set -x
 verbose=false
 dryrun=false
+listp=false
 excludefile='dump.exclude'
 DEFAULT_PATHES=(
   '/dev/block/*/*/by-name'
@@ -13,13 +14,15 @@ DEFAULT_PATHES=(
 )
 
 progname=`basename $0`
-usage="$progname [-hvn] [-p glob] [-x exclude]
+usage="$progname [-lhvn] [-p GLOB] [-s SERIAL] [-x EXCLUDE]
   -h
     print this message and exit
   -v
     verbosely echoing
   -n
     dry-run with verbose
+  -l
+    list partition names and exit
   -p GLOB
     A shell glob pattern to search directories that includes partition names as file(node) names.
     example: $progname -p /dev/block/platform/*/msm_sdcc.1/by-name
@@ -35,12 +38,13 @@ usage="$progname [-hvn] [-p glob] [-x exclude]
 globs=()
 while true; do
   case "$1" in
+  -l) listp=true; shift;;
   -p) globs+=("$2"); shift 2;;
   -x) excludefile="$2"; shift 2;;
   -s) serial="$2"; shift 2;;
   -h) echo "$usage"; exit 0;;
   -v) verbose=true; shift;;
-  -n) dryrun=true; verbose=true; shift;;
+  -n) dryrun=true; shift;;
   -*) shift;;
   *) break;;
   esac
@@ -50,12 +54,16 @@ test ${#globs[@]} -eq 0 && globs=${DEFAULT_PATHES[@]}
 ## functions
 ##
 
-_adb() {
-  adb ${serial:+-s $serial} "$@"
+list_adb_devices() {
+  adb devices | grep -v -e '^List of devices attached$' -e '^$'
 }
 
-number_of_remote_devices() {
-  adb devices | grep -v -e '^List of devices attached$' -e '^$' | grep "^$serial	" | wc -l
+number_of_adb_devices() {
+  list_adb_devices | if [ -n "$serial" ]; then grep "^$serial	"; else cat -; fi | wc -l
+}
+
+_adb() {
+  adb ${serial:+-s $serial} "$@"
 }
 
 adbx() {
@@ -119,11 +127,11 @@ get_partitions_list_dir() {
 ## main
 ##
 
-nrdev=`number_of_remote_devices`
-if [ $nrdev -eq 0 ]; then
+nadev=`number_of_adb_devices`
+if [ $nadev -eq 0 ]; then
   echo "$0: No remote adb devices.">&2
   exit 2
-elif [ $nrdev -ge 2 ]; then
+elif [ $nadev -ge 2 ]; then
   echo "$0: Two or more remote adb devices exist. Please use $ANDROID_SERIAL envvar, or -s option.">&2
   exit 2
 fi
@@ -135,7 +143,7 @@ fi
 if remote_adb_is_rooted; then
   sucmd=''
 elif remote_su_not_exist; then
-  echo "$0: Unable to dump: There are neither rooted adbx nor su command.">&2
+  echo "$0: Unable to dump: There are neither rooted adbd nor su command on the device. Solution: TWRP recovery or root the device.">&2
   exit 2
 else
   sucmd='su -c'
@@ -155,6 +163,10 @@ $verbose && echo "partitions: $parts"
 ipart=0
 for part in $parts; do
   ipart=`expr $ipart + 1`
+  $listp && {
+    echo "$part"
+    continue
+  }
   echo -n "($ipart/$parts_len)$part:"
   for ex in $exclude; do
     if [ "$part" = "$ex" ]; then
@@ -164,6 +176,6 @@ for part in $parts; do
   done
   echo
   $verbose && echo "adbx shell $sucmd \"cat $partListDir/$part\" >\"$part.img\""
-  $dryrun || adbx shell $sucmd "cat $partListDir/$part" >"$part.img"
+  $dryrun || $listp || adbx shell $sucmd "cat $partListDir/$part" >"$part.img"
 done
 exit 0
