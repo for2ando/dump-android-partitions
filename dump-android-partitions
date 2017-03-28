@@ -5,6 +5,7 @@
 verbose=false
 dryrun=false
 listp=false
+allp=false
 excludefile='dump.exclude'
 DEFAULT_PATHES=(
   '/dev/block/*/*/by-name'
@@ -14,34 +15,39 @@ DEFAULT_PATHES=(
 )
 
 progname=`basename $0`
-usage="$progname [-lhvn] [-p GLOB] [-s SERIAL] [-x EXCLUDE]
+usage="$progname [-lhvn] [-p GLOB] [-s SERIAL] [-x EXCLUDE] {-a|[PARTITION ...]}
+  -a
+    dump all partitions except those designated with -x option
+  -l
+    list partition names and exit
+  -p GLOB
+    A shell glob pattern to search directories that includes partition names as file(node) names
+    example: $progname -p /dev/block/platform/*/msm_sdcc.1/by-name
+    To use multiple globs, you can repeat -p options.
+    default globs: ${DEFAULT_PATHES[@]}
+  -s SERIAL
+    use device with given serial number (overrides \$ANDROID_SERIAL), same as adb command
+  -x EXCLUDE
+    A file includes partition names to be excluded from dumping
+    default: $excludefile
   -h
     print this message and exit
   -v
     verbosely echoing
   -n
     dry-run with verbose
-  -l
-    list partition names and exit
-  -p GLOB
-    A shell glob pattern to search directories that includes partition names as file(node) names.
-    example: $progname -p /dev/block/platform/*/msm_sdcc.1/by-name
-    To use multiple globs, you can repeat -p options.
-    default globs: ${DEFAULT_PATHES[@]}
-  -x EXCLUDE
-    A file includes partition names to be excluded from dumping
-    default: $excludefile
-  -s SERIAL
-    use device with given serial number (overrides \$ANDROID_SERIAL), same as adb command.
+  PARTITION
+    a partition name to be dumped
 "
 
 globs=()
 while true; do
   case "$1" in
+  -a) allp=true; shift;;
   -l) listp=true; shift;;
   -p) globs+=("$2"); shift 2;;
-  -x) excludefile="$2"; shift 2;;
   -s) serial="$2"; shift 2;;
+  -x) excludefile="$2"; shift 2;;
   -h) echo "$usage"; exit 0;;
   -v) verbose=true; shift;;
   -n) dryrun=true; shift;;
@@ -127,6 +133,8 @@ get_partitions_list_dir() {
 ## main
 ##
 
+$allp || test $# -ge 1 || { echo "$usage"; exit 1; }
+
 nadev=`number_of_adb_devices`
 if [ $nadev -eq 0 ]; then
   echo "$0: No remote adb devices.">&2
@@ -157,8 +165,18 @@ test -f "$excludefile" && {
 partListDir=`get_partitions_list_dir globs`
 if [ $? -ne 0 ]; then exit 2; fi
 
-parts=`adbx shell $sucmd ls "$partListDir"`
+
+if $allp; then
+  parts=`adbx shell $sucmd ls "$partListDir"`
+else
+  parts=''
+  for glob in "$@"; do
+    parts1=`adbx shell $sucmd ls "$partListDir/$glob"`
+    parts="$parts `basename -a $parts1`"
+  done
+fi
 parts_len=`echo "$parts" | wc -w`
+
 $verbose && echo "partitions: $parts"
 ipart=0
 for part in $parts; do
@@ -170,7 +188,7 @@ for part in $parts; do
   echo -n "($ipart/$parts_len)$part:"
   for ex in $exclude; do
     if [ "$part" = "$ex" ]; then
-      echo excluded.
+      echo " excluded."
       continue 2
     fi
   done
