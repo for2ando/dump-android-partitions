@@ -1,45 +1,59 @@
 #!/bin/bash
-# execute it on PC
-# desirably, before first boot
-#set -x
-verbose=false
-dryrun=false
-listp=false
-allp=false
-excludefile='dump.exclude'
+
+DEFAULT_EXCLUDE_FILE='dump.exclude'
 DEFAULT_PATHES=(
   '/dev/block/*/*/by-name'
   '/dev/block/*/*/*/by-name'
   '/dev/block/*/*/by-num'
   '/dev/block/*/*/*/by-num'
 )
+DEFAULT_PARTITION_FOR_TESTMODE='boot'
+DEFAULT_REMOTE_WORKDIR_FOR_TESTMODE='/data/local/tmp'
 
-progname=`basename $0`
-usage="$progname [-lhvn] [-p GLOB] [-s SERIAL] [-x EXCLUDE] {-a|[PARTITION ...]}
+progname=`basename $0` || progname="$0"
+usage="$progname [-lvnt] [-p GLOB] [-s SERIAL] [-x EXCLUDE] [-w WORKDIR] {-a|PARTITION ...}
+$progname -l {-a|PARTITION ...}
+$progname -h
   -a
     dump all partitions except those designated with -x option
   -l
-    list partition names and exit
+    list partition names on a device and exit
   -p GLOB
     A shell glob pattern to search directories that includes partition names as file(node) names
     example: $progname -p /dev/block/platform/*/msm_sdcc.1/by-name
     To use multiple globs, you can repeat -p options.
-    default globs: ${DEFAULT_PATHES[@]}
+    default: ${DEFAULT_PATHES[@]}
   -s SERIAL
     use device with given serial number (overrides \$ANDROID_SERIAL), same as adb command
+  -t
+    TEST mode.
+    Get dumped images by both a traditional dd method and a cat method ($progname is normailly used this),
+    and compare both images by cmp command. If two images differ, perhaps the cat method is buggy.
+  -w WORKDIR
+    a working directory path on a remote adb device, used only on TEST mode.
+    default: $DEFAULT_REMOTE_WORKDIR_FOR_TESTMODE
   -x EXCLUDE
     A file includes partition names to be excluded from dumping
-    default: $excludefile
+    default: $DEFAULT_EXCLUDE_FILE
   -h
     print this message and exit
   -v
-    verbosely echoing
+    verbosely echoing information messages
   -n
-    dry-run with verbose
+    dry-run
   PARTITION
     a partition name to be dumped
 "
 
+tmpfile=
+cleanup=
+verbose=false
+dryrun=false
+listp=false
+testmodep=false
+allp=false
+excludefile="$DEFAULT_EXCLUDE_FILE"
+workdir="$DEFAULT_REMOTE_WORKDIR_FOR_TESTMODE"
 globs=()
 while true; do
   case "$1" in
@@ -47,6 +61,8 @@ while true; do
   -l) listp=true; shift;;
   -p) globs+=("$2"); shift 2;;
   -s) serial="$2"; shift 2;;
+  -t) testmodep=true; shift;;
+  -w) workdir="$2"; shift 2;;
   -x) excludefile="$2"; shift 2;;
   -h) echo "$usage"; exit 0;;
   -v) verbose=true; shift;;
@@ -72,12 +88,12 @@ _adb() {
   adb ${serial:+-s $serial} "$@"
 }
 
-adbx() {
-  _adb "$@" | sed -b 's/\r$//'
+adb_shell() {
+  _adb shell "$@" | sed -b 's/\r$//'
 }
 
 adb_echo_result() {
-  adbx shell $sucmd "$@" ">/dev/null" "2>/dev/null" ";" "echo" "\$?"
+  adb_shell "$@" ">/dev/null" "2>/dev/null" ";" "echo" "\$?"
 }
 
 adb_return_result() {
@@ -98,7 +114,7 @@ globmatch() {
 }
 
 remote_adb_is_rooted() {
-  globmatch "`adbx shell id`" 'uid=0\(*'
+  globmatch "`adb_shell id`" 'uid=0\(*'
 }
 
 remote_su_not_exist() {
@@ -109,10 +125,11 @@ get_partitions_list_dir() {
   declare -n partListGlobs=$1
   partListDir=
   for glob in ${partListGlobs[@]}; do
-    partListDirs=`adbx shell $sucmd echo "$glob"`
+    $verbose && echo "glob for partitions list directory: $glob">&2
+    partListDirs=`adb_shell $sucmd echo "$glob"`
     partListDirs_len=`echo "$partListDirs" | wc -w`
-    $verbose && echo "partitions (by name) list: $partListDirs">&2
-    if [ $partListDirs_len -eq 1 ] && adb_return_result test -d "$partListDirs"; then
+    $verbose && echo "partitions list directory: $partListDirs">&2
+    if [ $partListDirs_len -eq 1 ] && adb_return_result $sucmd test -d "$partListDirs"; then
       partListDir="$partListDirs"
       break
     fi
@@ -125,7 +142,7 @@ get_partitions_list_dir() {
       echo "  $partListDirs">&2
       echo "You can use -p option to specify single partitions list directory.">&2
     fi
-    return 2
+    return 2./
   fi
   echo "$partListDir"
 }
@@ -133,25 +150,28 @@ get_partitions_list_dir() {
 ## main
 ##
 
-$allp || test $# -ge 1 || { echo "$usage"; exit 1; }
+$testmodep || $allp || test $# -ge 1 || {
+  echo "$progname: At least one argument or -a is required.">&2
+  exit 1
+}
 
 nadev=`number_of_adb_devices`
 if [ $nadev -eq 0 ]; then
-  echo "$0: No remote adb devices.">&2
+  echo "$progname: No remote adb devices.">&2
   exit 2
 elif [ $nadev -ge 2 ]; then
-  echo "$0: Two or more remote adb devices exist. Please use $ANDROID_SERIAL envvar, or -s option.">&2
+  echo "$progname: Two or more remote adb devices exist. Please use $ANDROID_SERIAL envvar, or -s option.">&2
   exit 2
 fi
 
 if remote_cmd_not_exist id; then
-  echo "$0: Unable to dump: No id command: I gave up.">&2
+  echo "$progname: Unable to dump: No id command: I gave up.">&2
   exit 2
 fi
 if remote_adb_is_rooted; then
   sucmd=''
 elif remote_su_not_exist; then
-  echo "$0: Unable to dump: There are neither rooted adbd nor su command on the device. Solution: TWRP recovery or root the device.">&2
+  echo "$progname: Unable to dump: There are neither rooted adbd nor su command on the device. Solution: TWRP recovery or root the device.">&2
   exit 2
 else
   sucmd='su -c'
@@ -167,33 +187,65 @@ if [ $? -ne 0 ]; then exit 2; fi
 
 
 if $allp; then
-  parts=`adbx shell $sucmd ls "$partListDir"`
+  parts=`adb_shell $sucmd ls "$partListDir"`
 else
   parts=''
+  $testmodep && [ $# -eq 0 ] && parts="$DEFAULT_PARTITION_FOR_TESTMODE"
   for glob in "$@"; do
-    parts1=`adbx shell $sucmd ls "$partListDir/$glob"`
-    parts="$parts `basename -a $parts1`"
+    partsFull=`adb_shell $sucmd ls "$partListDir/$glob"`
+    parts="$parts `basename -a $partsFull`"
   done
 fi
-parts_len=`echo "$parts" | wc -w`
+partsLen=`echo "$parts" | wc -w`
+
 
 $verbose && echo "partitions: $parts"
 ipart=0
 for part in $parts; do
-  ipart=`expr $ipart + 1`
-  $listp && {
-    echo "$part"
-    continue
-  }
-  echo -n "($ipart/$parts_len)$part:"
-  for ex in $exclude; do
-    if [ "$part" = "$ex" ]; then
-      echo " excluded."
-      continue 2
-    fi
+  cleanup=
+  while true; do
+    ipart=`expr $ipart + 1`
+    $listp && {
+      echo "$part"
+      break
+    }
+    echo -n "($ipart/$partsLen)$part:"
+    for ex in $exclude; do
+      if [ "$part" = "$ex" ]; then
+        echo " excluded."
+        break 2
+      fi
+    done
+    echo
+    $testmodep && {
+      #$verbose && echo ""
+      cleanup="rm -rf '$tmpfile'; adb_shell $sucmd rm -f '$workdir/$part.img'"
+      $dryrun || {
+        trap "$cleanup" EXIT
+        tmpfile=`mktemp` || {
+          echo "$progname: TEST mode: $tmpfile: cannot create temporary directory.">&2; break; }
+      }
+      $dryrun || adb_return_result $sucmd dd if="$partListDir/$part" of="$workdir/$part.img" bs=1048576 || {
+        echo "$progname: TEST mode: remote dd for partition:$part failed. Skip it.">&2; break; }
+      $dryrun || adb_return_result $sucmd chmod 644 "$workdir/$part.img" || {
+        echo "$progname: TEST mode: chmod for file:$part.img failed. Skip partition:$part.">&2; break; }
+      #$verbose && echo ""
+      $dryrun || adb pull "$workdir/$part.img" `cygpath -w "$tmpfile"` >/dev/null || {
+        echo "$progname: TEST mode: adb pull for partition:$part failed. Skip it.">&2; break; }
+    }
+    $verbose && echo "adb_shell $sucmd \"cat $partListDir/$part\" >\"$part.img\""
+    $dryrun || adb_shell $sucmd "cat $partListDir/$part" >"$part.img"
+    $testmodep && {
+      #$verbose && echo ""
+      $dryrun || if cmp "$tmpfile" "$part.img"; then
+          echo "TEST mode: Ok (A dumped image completely same with that by dd)."
+        else
+          echo "TEST mode: Fail (A dumped image differs from that by dd). possible bug in $0."
+        fi
+    }
+    break;
   done
-  echo
-  $verbose && echo "adbx shell $sucmd \"cat $partListDir/$part\" >\"$part.img\""
-  $dryrun || $listp || adbx shell $sucmd "cat $partListDir/$part" >"$part.img"
+  eval "$cleanup"
+  trap EXIT
 done
 exit 0
