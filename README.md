@@ -5,8 +5,13 @@ dump-android-partitions
 Dump all partitions on an Android device from PC via adb
 
 ## Description
-(REQUIRES ROOT maybe on your Android device)
-A list of partitions is gotten from the device's /dev/block/**/by-name by default.
+(REQUIRES ROOT maybe on your Android device
+)
+You can dump all or argument-designated partitions of your Android device using this shell script.
+
+This script gets a list of partitions from the Android device's /dev/block/**/by-name (by default),
+and with each of the partitions, the script dumps a binary image of partition as if use with dd command,
+the binary images are stored as files on your PC's storage.
 
 
 ## Demo
@@ -95,10 +100,14 @@ A list of partitions is gotten from the device's /dev/block/**/by-name by defaul
 
 
 ## Requirement
+* one of following environments on your PC: Unix, or Cygwin, msys2, ubuntu on Windows (some are not tested.)
+* bash command line shell on your PC
 * adb command on your PC
 * adb debug switch is ON on your Android device.
 * read permissions for partitions-device-file's directory (/dev/block/**/by-name by default) on your Android device
 * white permissions for working directory (/data/local/tmp by default) on your Android device
+
+Some of above usually require ROOT permissions.
 
 ## Usage
     dump-android-partitions [-lvnt] [-p GLOB] [-s SERIAL] [-x EXCLUDE] [-w WORKDIR] {-a|PARTITION ...}
@@ -132,7 +141,7 @@ A list of partitions is gotten from the device's /dev/block/**/by-name by defaul
       -n
         dry-run
       PARTITION
-        a partition name to be dumped
+        a partition name to be dumped. shell globbing available
 
 
 ## Example
