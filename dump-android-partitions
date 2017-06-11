@@ -99,7 +99,7 @@ _adb() {
 }
 
 adb_shell() {
-  _adb shell "$@" | sed -b 's/\r$//'
+  _adb shell "$@" | sed -b 's/\r$//;s/\r$//'
 }
 
 adb_echo_result() {
@@ -141,23 +141,23 @@ get_partitions_list_dir() {
   partListDir=
   for glob in ${partListGlobs[@]}; do
     $verbose2 && echo "glob for partitions list directory: $glob">&2
-    partListDirs=`adb_shell $sucmd echo "$glob"`
+    partListDirs=`adb_shell $sucmd "'echo $glob'"`
     partListDirs_len=`echo "$partListDirs" | wc -w`
     $verbose2 && echo "partitions list directory: $partListDirs">&2
-    if [ $partListDirs_len -eq 1 ] && adb_return_result $sucmd test -d "$partListDirs"; then
+    if [ $partListDirs_len -eq 1 ] && adb_return_result $sucmd "'test -d \"$partListDirs\"'"; then
       partListDir="$partListDirs"
       break
     fi
   done
   if [ -z "$partListDir" ]; then
-    if [ $partListDirs_len -eq 1 ]; then
+    if [ $partListDirs_len -le 1 ]; then
       echo "There are no partitions list directory for: ${partListGlobs[@]}">&2
     else
       echo "There are multiple partitions list directories for ${partListGlobs[@]} are found as follows:">&2
       echo "  $partListDirs">&2
       echo "You can use -p option to specify single partitions list directory.">&2
     fi
-    return 2./
+    return 2
   fi
   echo "$partListDir"
 }
@@ -202,19 +202,19 @@ if [ $? -ne 0 ]; then exit 2; fi
 
 
 if $allp; then
-  parts=`adb_shell $sucmd ls "$partListDir"`
+  parts=`adb_shell $sucmd "'ls \"$partListDir\"'"`
 else
   parts=''
   $testmodep && [ $# -eq 0 ] && parts="$DEFAULT_PARTITION_FOR_TESTMODE"
   for glob in "$@"; do
-    partsFull=`adb_shell $sucmd ls "$partListDir/$glob"`
+    partsFull=`adb_shell $sucmd "'ls \"$partListDir/$glob\"'"`
     parts="$parts `basename -a $partsFull`"
   done
 fi
 partsLen=`echo "$parts" | wc -w`
 
 
-$verbose2 && echo "partitions: $parts">&2
+$verbose2 && echo -e "partitions:\n$parts">&2
 ipart=0
 for part in $parts; do
   cleanup=
@@ -233,20 +233,20 @@ for part in $parts; do
     done
     echo
     $testmodep && {
-      cleanup="rm -rf '$tmpfile'; adb_shell '$sucmd rm -f \"$workdir/$part.img\"'"
+      cleanup="rm -rf '$tmpfile'; adb_shell $sucmd '\"rm -f \\\"$workdir/$part.img\\\"\"'"
       $dryrun || {
         trap "$cleanup" EXIT
         tmpfile=`mktemp` || {
           echo "$progname: TEST mode: $tmpfile: cannot create temporary directory.">&2; break; }
       }
-      _run "adb_return_result '$sucmd \"dd if=\\\"$partListDir/$part\\\" of=\\\"$workdir/$part.img\\\" bs=1048576\"'" || {
+      _run "adb_return_result $sucmd '\"dd if=\\\"$partListDir/$part\\\" of=\\\"$workdir/$part.img\\\" bs=1048576\"'" || {
         echo "$progname: TEST mode: remote dd for partition:$part failed. Skip it.">&2; break; }
-      _run "adb_return_result '$sucmd \"chmod 644 \\\"$workdir/$part.img\\\"\"'" || {
+      _run "adb_return_result $sucmd '\"chmod 644 \\\"$workdir/$part.img\\\"\"'" || {
         echo "$progname: TEST mode: chmod for file:$part.img failed. Skip partition:$part.">&2; break; }
       _run "adb pull '$workdir/$part.img' '`cygpath -w \"$tmpfile\"`' >/dev/null" || {
         echo "$progname: TEST mode: adb pull for partition:$part failed. Skip it.">&2; break; }
     }
-    _run "adb_shell '$sucmd cat \"$partListDir/$part\"' >\"$part.img\""
+    _run "adb_shell $sucmd '\"cat \\\"$partListDir/$part\\\"\"' >'$part.img'"
     $testmodep && {
       if _run "cmp '$tmpfile' '$part.img'"; then
           $dryrun || echo "TEST mode: Ok (A dumped image completely same with that by dd)."
